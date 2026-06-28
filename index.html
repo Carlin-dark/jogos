@@ -42,6 +42,38 @@
       flex-shrink: 0;
     }
 
+    .joystick-wrap {
+      position: absolute;
+      left: 16px;
+      bottom: 16px;
+      z-index: 3;
+      display: none;
+      pointer-events: auto;
+    }
+
+    .joystick-base {
+      width: 96px;
+      height: 96px;
+      border-radius: 50%;
+      background: rgba(0, 0, 0, 0.45);
+      border: 2px solid rgba(255,255,255,0.25);
+      position: relative;
+      touch-action: none;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08);
+    }
+
+    .joystick-knob {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      background: rgba(15, 255, 0, 0.9);
+      position: absolute;
+      left: 26px;
+      top: 26px;
+      transform: translate(0, 0);
+      box-shadow: 0 0 10px rgba(15,255,0,0.4);
+    }
+
     canvas {
       border: 2px solid #0f0;
       background: #0a0a0a;
@@ -49,8 +81,8 @@
       cursor: crosshair;
       width: 100%;
       height: auto;
-      max-width: 600px;
-      max-height: 400px;
+      max-width: 1200px;
+      max-height: 800px;
       touch-action: none;
       -webkit-tap-highlight-color: transparent;
     }
@@ -322,7 +354,12 @@
   <div class="container">
     <!-- Área do Jogo -->
     <div class="game-area">
-      <canvas id="gameCanvas" width="600" height="400"></canvas>
+      <canvas id="gameCanvas" width="1200" height="800"></canvas>
+      <div class="joystick-wrap" id="joystickWrap" style="display:none;">
+        <div class="joystick-base" id="joystickBase">
+          <div class="joystick-knob" id="joystickKnob"></div>
+        </div>
+      </div>
     </div>
 
     <!-- Painel de Status -->
@@ -380,6 +417,10 @@
       <label style="font-size: 11px; color: #aaa; display: block; margin-top: 8px;">Seu nome:</label>
       <input type="text" id="playerName" value="Jogador" />
 
+      <label style="font-size: 11px; color: #aaa; display: block; margin-top: 8px;">
+        <input type="checkbox" id="mobileToggle" /> Mobile
+      </label>
+
       <label style="font-size: 11px; color: #aaa; display: block; margin-top: 8px;">Sala:</label>
       <input type="text" id="roomName" value="sala1" />
 
@@ -403,48 +444,53 @@
   </div>
 
   <script>
-    // Configuração do jogo
     const config = {
       canvas: null,
       ctx: null,
       socket: null,
-      width: 600,
-      height: 400,
+      width: 1200,
+      height: 800,
       player: {
         x: 300,
         y: 200,
         vx: 0,
         vy: 0,
-        radius: 8,
+        radius: 10,
         angle: 0,
         speed: 5,
         dashCooldown: 0,
         dashDuration: 0,
         score: 0,
         health: 100,
-        maxHealth: 100
+        maxHealth: 100,
+        alive: true,
+        kills: 0,
+        deaths: 0,
+        respawnTimer: 0
       },
+      players: [],
       enemies: [],
       bullets: [],
+      obstacles: [],
       remotePlayers: [],
+      winner: null,
       keys: {},
       mouse: { x: 300, y: 200, down: false },
       lastFrameTime: 0,
       fps: 0,
       connected: false,
       lastUpdateTime: 0,
-      updateInterval: 50, // ms
+      updateInterval: 50,
       roomName: 'sala1',
-      playerName: 'Jogador'
+      playerName: 'Jogador',
+      mobileControlsEnabled: false,
+      joystick: { active: false, x: 0, y: 0 }
     };
 
-    // Inicializar Canvas
     function initGame() {
       config.canvas = document.getElementById('gameCanvas');
       config.ctx = config.canvas.getContext('2d');
       resizeCanvas();
-
-      config.isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
 
       document.addEventListener('keydown', handleKeyDown);
       document.addEventListener('keyup', handleKeyUp);
@@ -467,6 +513,7 @@
       document.getElementById('disconnectBtn').addEventListener('click', disconnectSocket);
       document.getElementById('testEmitBtn').addEventListener('click', testEmit);
       document.getElementById('sendChatBtn').addEventListener('click', sendChatMessage);
+      document.getElementById('mobileToggle').addEventListener('change', toggleJoystickVisibility);
       document.getElementById('chatInput').addEventListener('keydown', (event) => {
         if (event.key === 'Enter') {
           sendChatMessage();
@@ -483,34 +530,97 @@
       config.roomName = roomParam || 'sala1';
       config.playerName = nameParam || 'Jogador';
 
+      setupJoystick();
+      toggleJoystickVisibility();
       gameLoop();
     }
 
     function resizeCanvas() {
       const dpr = window.devicePixelRatio || 1;
-      config.canvas.width = 600 * dpr;
-      config.canvas.height = 400 * dpr;
+      config.canvas.width = config.width * dpr;
+      config.canvas.height = config.height * dpr;
       config.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     }
 
-    // Conectar ao Socket.IO
+    function setupJoystick() {
+      const base = document.getElementById('joystickBase');
+      const knob = document.getElementById('joystickKnob');
+      if (!base || !knob) return;
+
+      const updateJoystick = (clientX, clientY) => {
+        const rect = base.getBoundingClientRect();
+        const centerX = rect.left + rect.width / 2;
+        const centerY = rect.top + rect.height / 2;
+        const dx = clientX - centerX;
+        const dy = clientY - centerY;
+        const maxDistance = rect.width / 2 - 22;
+        const distance = Math.min(maxDistance, Math.sqrt(dx * dx + dy * dy));
+        const angle = Math.atan2(dy, dx);
+        const offsetX = Math.cos(angle) * distance;
+        const offsetY = Math.sin(angle) * distance;
+        const magnitude = distance / maxDistance;
+
+        knob.style.transform = `translate(${offsetX}px, ${offsetY}px)`;
+        config.joystick.active = magnitude > 0.05;
+        config.joystick.x = config.joystick.active ? dx / (maxDistance || 1) : 0;
+        config.joystick.y = config.joystick.active ? dy / (maxDistance || 1) : 0;
+      };
+
+      const resetJoystick = () => {
+        config.joystick.active = false;
+        config.joystick.x = 0;
+        config.joystick.y = 0;
+        knob.style.transform = 'translate(0, 0)';
+      };
+
+      base.addEventListener('pointerdown', (event) => {
+        if (!config.mobileControlsEnabled) return;
+        event.preventDefault();
+        base.setPointerCapture(event.pointerId);
+        config.joystick.active = true;
+        updateJoystick(event.clientX, event.clientY);
+      });
+
+      base.addEventListener('pointermove', (event) => {
+        if (!config.mobileControlsEnabled || !config.joystick.active) return;
+        event.preventDefault();
+        updateJoystick(event.clientX, event.clientY);
+      });
+
+      base.addEventListener('pointerup', resetJoystick);
+      base.addEventListener('pointercancel', resetJoystick);
+      base.addEventListener('pointerleave', resetJoystick);
+      window.addEventListener('pointerup', resetJoystick);
+    }
+
+    function toggleJoystickVisibility() {
+      const enabled = document.getElementById('mobileToggle').checked;
+      const wrap = document.getElementById('joystickWrap');
+      config.mobileControlsEnabled = enabled;
+      if (wrap) {
+        wrap.style.display = enabled ? 'block' : 'none';
+      }
+      if (!enabled) {
+        config.joystick.active = false;
+        config.joystick.x = 0;
+        config.joystick.y = 0;
+        const knob = document.getElementById('joystickKnob');
+        if (knob) knob.style.transform = 'translate(0, 0)';
+      }
+    }
+
     function connectSocket() {
       const url = (document.getElementById('serverUrl').value || '').trim() || (window.location.protocol === 'file:' ? 'http://localhost:3000' : window.location.origin);
       config.roomName = (document.getElementById('roomName').value || 'sala1').trim() || 'sala1';
       config.playerName = (document.getElementById('playerName').value || '').trim() || `Jogador-${Math.floor(Math.random() * 1000)}`;
 
-      if (config.socket) {
-        config.socket.disconnect();
-      }
+      if (config.socket) config.socket.disconnect();
 
       config.socket = io(url, {
         transports: ['websocket'],
         forceNew: true,
         reconnection: true,
-        query: {
-          room: config.roomName,
-          name: config.playerName
-        },
+        query: { room: config.roomName, name: config.playerName },
         reconnectionDelay: 1000,
         reconnectionDelayMax: 5000,
         reconnectionAttempts: 5
@@ -519,15 +629,13 @@
       config.socket.on('connect', () => {
         config.connected = true;
         updateUI();
-        addLog(`Conectado ao servidor na sala ${config.roomName}!`, 'success');
+        addLog(`Conectado na sala ${config.roomName}!`, 'success');
         config.socket.emit('joinRoom', { roomName: config.roomName });
       });
 
       config.socket.on('playerAssigned', (data) => {
         config.playerId = data.id;
-        if (data.name) {
-          config.playerName = data.name;
-        }
+        if (data.name) config.playerName = data.name;
         if (data.room) {
           config.roomName = data.room;
           document.getElementById('roomName').value = data.room;
@@ -537,6 +645,7 @@
       config.socket.on('disconnect', () => {
         config.connected = false;
         config.enemies = [];
+        config.bullets = [];
         updateUI();
         addLog('Desconectado do servidor', 'error');
       });
@@ -545,27 +654,34 @@
         addLog(`Erro: ${err.message}`, 'error');
       });
 
-      // Receber atualizações de inimigos
-      config.socket.on('enemies', (data) => {
+      config.socket.on('gameState', (data) => {
+        config.players = data.players || [];
         config.enemies = data.enemies || [];
+        config.bullets = data.bullets || [];
+        config.obstacles = data.obstacles || [];
+        config.winner = data.winner || null;
+        config.remotePlayers = config.players.filter((player) => player.id !== config.socket.id);
+
+        const self = config.players.find((player) => player.id === config.socket.id);
+        if (self) {
+          config.player.x = self.x;
+          config.player.y = self.y;
+          config.player.angle = self.angle || 0;
+          config.player.score = self.score || 0;
+          config.player.health = self.health || config.player.health;
+          config.player.maxHealth = self.maxHealth || 100;
+          config.player.alive = self.alive !== false;
+          config.player.kills = self.kills || 0;
+          config.player.deaths = self.deaths || 0;
+          config.player.respawnTimer = self.respawnTimer || 0;
+        }
+
+        updatePlayersList(config.players);
+        updateUI();
       });
 
-      // Receber jogadores
-      config.socket.on('players', (data) => {
-        const players = data.players || [];
-        config.remotePlayers = players.filter((player) => player.id !== config.socket.id);
-        updatePlayersList(players);
-      });
-
-      // Receber mensagens do servidor
       config.socket.on('message', (data) => {
         addLog(`Servidor: ${data.msg}`, 'info');
-      });
-
-      // Receber notificações
-      config.socket.on('hit', (data) => {
-        config.player.score += data.points || 10;
-        addLog(`Acertou! +${data.points || 10} pontos`, 'success');
       });
 
       config.socket.on('chatMessage', (message) => {
@@ -587,31 +703,25 @@
         addLog('Não conectado ao servidor', 'error');
         return;
       }
-
       config.socket.emit('hello', {
         msg: 'Olá do jogo!',
         playerPos: { x: config.player.x, y: config.player.y },
         score: config.player.score
       });
-
       addLog('Mensagem de teste enviada', 'success');
     }
 
     function sendChatMessage() {
       if (!config.socket || !config.connected) return;
-
       const input = document.getElementById('chatInput');
       const text = input.value.trim();
       if (!text) return;
-
       config.socket.emit('chatMessage', { text });
       input.value = '';
     }
 
-    // Entrada de teclado
     function handleKeyDown(e) {
       config.keys[e.key.toLowerCase()] = true;
-
       if (e.key === ' ') {
         e.preventDefault();
         dash();
@@ -622,7 +732,6 @@
       config.keys[e.key.toLowerCase()] = false;
     }
 
-    // Entrada de mouse
     function getPointerPosition(e) {
       const rect = config.canvas.getBoundingClientRect();
       const scaleX = config.width / rect.width;
@@ -676,36 +785,35 @@
       config.mouse.down = false;
     }
 
-    // Atualizar movimento do jogador
     function updatePlayer() {
       config.player.vx = 0;
       config.player.vy = 0;
 
-      // Movimento com setas ou WASD
+      if (!config.player.alive) {
+        if (config.player.respawnTimer > 0) config.player.respawnTimer = Math.max(0, config.player.respawnTimer - 1);
+        return;
+      }
+
       if (config.keys['arrowup'] || config.keys['w']) config.player.vy -= config.player.speed;
       if (config.keys['arrowdown'] || config.keys['s']) config.player.vy += config.player.speed;
       if (config.keys['arrowleft'] || config.keys['a']) config.player.vx -= config.player.speed;
       if (config.keys['arrowright'] || config.keys['d']) config.player.vx += config.player.speed;
 
-      // Aplicar velocidade
+      if (config.mobileControlsEnabled && config.joystick.active) {
+        config.player.vx += config.joystick.x / 100 * config.player.speed;
+        config.player.vy += config.joystick.y / 100 * config.player.speed;
+      }
+
       config.player.x += config.player.vx;
       config.player.y += config.player.vy;
-
-      // Limites da tela
       config.player.x = Math.max(config.player.radius, Math.min(config.width - config.player.radius, config.player.x));
       config.player.y = Math.max(config.player.radius, Math.min(config.height - config.player.radius, config.player.y));
-
-      // Mirar para o mouse
       config.player.angle = Math.atan2(config.mouse.y - config.player.y, config.mouse.x - config.player.x);
 
-      // Cooldown do dash
       if (config.player.dashCooldown > 0) config.player.dashCooldown--;
       if (config.player.dashDuration > 0) config.player.dashDuration--;
 
-      // Atirar
-      if (config.mouse.down && config.connected) {
-        shoot();
-      }
+      if (config.mouse.down && config.connected) shoot();
     }
 
     function dash() {
@@ -716,68 +824,20 @@
     }
 
     function shoot() {
-      const bullet = {
-        x: config.player.x,
-        y: config.player.y,
-        vx: Math.cos(config.player.angle) * 8,
-        vy: Math.sin(config.player.angle) * 8,
-        radius: 3,
-        life: 60
-      };
-
-      config.bullets.push(bullet);
-
+      if (!config.player.alive || !config.connected || !config.socket) return;
       if (config.socket && config.connected) {
         config.socket.emit('shoot', {
-          x: bullet.x,
-          y: bullet.y,
+          x: config.player.x,
+          y: config.player.y,
           angle: config.player.angle
         });
       }
     }
 
-    // Atualizar balas
-    function updateBullets() {
-      for (let i = config.bullets.length - 1; i >= 0; i--) {
-        const bullet = config.bullets[i];
-        bullet.x += bullet.vx;
-        bullet.y += bullet.vy;
-        bullet.life--;
-
-        // Colisão com inimigos
-        for (let j = config.enemies.length - 1; j >= 0; j--) {
-          const enemy = config.enemies[j];
-          const dx = bullet.x - enemy.x;
-          const dy = bullet.y - enemy.y;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-
-          if (dist < bullet.radius + (enemy.radius || 8)) {
-            config.bullets.splice(i, 1);
-            config.enemies.splice(j, 1);
-            config.player.score += 10;
-
-            if (config.socket && config.connected) {
-              config.socket.emit('enemyHit', { enemyId: enemy.id, score: 10 });
-            }
-
-            break;
-          }
-        }
-
-        // Remover bala fora da tela
-        if (bullet.life <= 0 || bullet.x < 0 || bullet.x > config.width || bullet.y < 0 || bullet.y > config.height) {
-          config.bullets.splice(i, 1);
-        }
-      }
-    }
-
-    // Desenhar jogo
     function render() {
-      // Limpar tela
       config.ctx.fillStyle = '#0a0a0a';
       config.ctx.fillRect(0, 0, config.width, config.height);
 
-      // Grid de fundo
       config.ctx.strokeStyle = '#1a1a1a';
       config.ctx.lineWidth = 0.5;
       for (let i = 0; i <= config.width; i += 50) {
@@ -793,32 +853,29 @@
         config.ctx.stroke();
       }
 
-      // Desenhar jogador
-      drawPlayer();
-
-      // Desenhar outros jogadores
-      drawRemotePlayers();
-
-      // Desenhar balas
+      drawObstacles();
       drawBullets();
-
-      // Desenhar inimigos
       drawEnemies();
-
-      // Desenhar HUD
+      drawRemotePlayers();
+      drawPlayer();
       drawHUD();
     }
 
     function drawPlayer() {
       const player = config.player;
+      if (!player.alive) {
+        config.ctx.fillStyle = '#777';
+        config.ctx.beginPath();
+        config.ctx.arc(player.x, player.y, player.radius, 0, Math.PI * 2);
+        config.ctx.fill();
+        return;
+      }
 
-      // Corpo do jogador
       config.ctx.fillStyle = '#0f0';
       config.ctx.beginPath();
       config.ctx.arc(player.x, player.y, player.radius, 0, Math.PI * 2);
       config.ctx.fill();
 
-      // Apontador (indicar direção)
       const pointerLength = player.radius * 2;
       const pointerX = player.x + Math.cos(player.angle) * pointerLength;
       const pointerY = player.y + Math.sin(player.angle) * pointerLength;
@@ -830,7 +887,6 @@
       config.ctx.lineTo(pointerX, pointerY);
       config.ctx.stroke();
 
-      // Efeito de dash
       if (player.dashDuration > 0) {
         config.ctx.fillStyle = 'rgba(0, 255, 0, 0.3)';
         config.ctx.beginPath();
@@ -838,7 +894,6 @@
         config.ctx.fill();
       }
 
-      // Barra de vida
       drawHealthBar(player.x, player.y - player.radius - 15, player.health, player.maxHealth);
     }
 
@@ -847,17 +902,18 @@
         const x = player.x || 0;
         const y = player.y || 0;
         const angle = player.angle || 0;
+        const alive = player.alive !== false;
 
-        config.ctx.fillStyle = '#0af';
+        config.ctx.fillStyle = alive ? '#0af' : '#777';
         config.ctx.beginPath();
-        config.ctx.arc(x, y, player.radius || 8, 0, Math.PI * 2);
+        config.ctx.arc(x, y, player.radius || 10, 0, Math.PI * 2);
         config.ctx.fill();
 
-        const pointerLength = (player.radius || 8) * 2;
+        const pointerLength = (player.radius || 10) * 2;
         const pointerX = x + Math.cos(angle) * pointerLength;
         const pointerY = y + Math.sin(angle) * pointerLength;
 
-        config.ctx.strokeStyle = '#0af';
+        config.ctx.strokeStyle = alive ? '#0af' : '#777';
         config.ctx.lineWidth = 2;
         config.ctx.beginPath();
         config.ctx.moveTo(x, y);
@@ -867,7 +923,7 @@
         config.ctx.fillStyle = '#fff';
         config.ctx.font = '10px monospace';
         config.ctx.textAlign = 'center';
-        config.ctx.fillText(player.name || 'Jogador', x, y - 14);
+        config.ctx.fillText(player.name || 'Jogador', x, y - 16);
       }
     }
 
@@ -875,7 +931,7 @@
       config.ctx.fillStyle = '#ff0';
       for (const bullet of config.bullets) {
         config.ctx.beginPath();
-        config.ctx.arc(bullet.x, bullet.y, bullet.radius, 0, Math.PI * 2);
+        config.ctx.arc(bullet.x, bullet.y, bullet.radius || 4, 0, Math.PI * 2);
         config.ctx.fill();
       }
     }
@@ -884,29 +940,30 @@
       for (const enemy of config.enemies) {
         config.ctx.fillStyle = '#f00';
         config.ctx.beginPath();
-        config.ctx.arc(enemy.x || 0, enemy.y || 0, enemy.radius || 8, 0, Math.PI * 2);
+        config.ctx.arc(enemy.x || 0, enemy.y || 0, enemy.radius || 10, 0, Math.PI * 2);
         config.ctx.fill();
+        if (enemy.health !== undefined) drawHealthBar(enemy.x - 15, enemy.y - 25, enemy.health, enemy.maxHealth);
+      }
+    }
 
-        // Barra de vida do inimigo
-        if (enemy.health !== undefined) {
-          drawHealthBar(enemy.x - 15, enemy.y - 25, enemy.health, enemy.maxHealth);
-        }
+    function drawObstacles() {
+      config.ctx.fillStyle = '#444';
+      for (const obstacle of config.obstacles) {
+        config.ctx.fillRect(obstacle.x, obstacle.y, obstacle.w, obstacle.h);
+        config.ctx.strokeStyle = '#666';
+        config.ctx.strokeRect(obstacle.x, obstacle.y, obstacle.w, obstacle.h);
       }
     }
 
     function drawHealthBar(x, y, health, maxHealth) {
       const barWidth = 30;
       const barHeight = 4;
-
       config.ctx.fillStyle = '#333';
       config.ctx.fillRect(x, y, barWidth, barHeight);
-
       const percentage = Math.max(0, health / maxHealth);
       const healthColor = percentage > 0.5 ? '#0f0' : percentage > 0.25 ? '#ff0' : '#f00';
-
       config.ctx.fillStyle = healthColor;
       config.ctx.fillRect(x, y, barWidth * percentage, barHeight);
-
       config.ctx.strokeStyle = healthColor;
       config.ctx.lineWidth = 1;
       config.ctx.strokeRect(x, y, barWidth, barHeight);
@@ -916,41 +973,58 @@
       config.ctx.fillStyle = '#0f0';
       config.ctx.font = '12px monospace';
       config.ctx.textAlign = 'left';
-
       config.ctx.fillText(`Pontuação: ${config.player.score}`, 10, 20);
       config.ctx.fillText(`Vida: ${Math.round(config.player.health)}/${config.player.maxHealth}`, 10, 35);
-      config.ctx.fillText(`Inimigos: ${config.enemies.length}`, 10, 50);
+      config.ctx.fillText(`Kills: ${config.player.kills}`, 10, 50);
+      config.ctx.fillText(`Mortes: ${config.player.deaths}`, 10, 65);
+      config.ctx.fillText(`Meta: ${20 - config.player.kills}`, 10, 80);
 
       if (!config.connected) {
         config.ctx.fillStyle = '#f00';
-        config.ctx.font = 'bold 14px monospace';
+        config.ctx.font = 'bold 16px monospace';
         config.ctx.textAlign = 'center';
         config.ctx.fillText('DESCONECTADO', config.width / 2, config.height - 20);
       }
+
+      if (config.winner) {
+        config.ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+        config.ctx.fillRect(0, 0, config.width, config.height);
+        config.ctx.fillStyle = '#ff0';
+        config.ctx.font = 'bold 28px monospace';
+        config.ctx.textAlign = 'center';
+        config.ctx.fillText(`Vitória de ${config.winner.name}!`, config.width / 2, config.height / 2 - 10);
+        config.ctx.font = '16px monospace';
+        config.ctx.fillText('Reinicie para jogar de novo', config.width / 2, config.height / 2 + 20);
+      } else if (!config.player.alive) {
+        config.ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+        config.ctx.fillRect(0, 0, config.width, config.height);
+        config.ctx.fillStyle = '#f00';
+        config.ctx.font = 'bold 24px monospace';
+        config.ctx.textAlign = 'center';
+        config.ctx.fillText('VOCÊ MORREU', config.width / 2, config.height / 2 - 10);
+        config.ctx.font = '16px monospace';
+        config.ctx.fillText('Respawn em breve...', config.width / 2, config.height / 2 + 20);
+      }
     }
 
-    // Loop principal
     function gameLoop() {
       const now = performance.now();
       const deltaTime = now - config.lastFrameTime;
       config.lastFrameTime = now;
-
-      // Calcular FPS
       config.fps = Math.round(1000 / deltaTime);
 
       updatePlayer();
-      updateBullets();
       render();
       updateUI();
 
-      // Enviar posição ao servidor a cada 50ms
       if (config.connected && now - config.lastUpdateTime > config.updateInterval) {
         if (config.socket) {
           config.socket.emit('playerMove', {
             x: config.player.x,
             y: config.player.y,
             angle: config.player.angle,
-            score: config.player.score
+            score: config.player.score,
+            alive: config.player.alive
           });
         }
         config.lastUpdateTime = now;
@@ -959,13 +1033,11 @@
       requestAnimationFrame(gameLoop);
     }
 
-    // Atualizar UI
     function updateUI() {
       document.getElementById('socketId').textContent = config.socket ? config.socket.id || '-' : '-';
       document.getElementById('connStatus').textContent = config.connected ? 'Conectado' : 'Desconectado';
       document.getElementById('connIndicator').className = 'connection-indicator ' + (config.connected ? 'connected' : 'disconnected');
       document.getElementById('playerScore').textContent = config.player.score;
-      document.getElementById('roomName').value = config.roomName;
       document.getElementById('enemyCount').textContent = config.enemies.length;
       document.getElementById('fpsCounter').textContent = config.fps;
     }
@@ -973,14 +1045,14 @@
     function updatePlayersList(players) {
       const list = document.getElementById('playersList');
       list.innerHTML = '';
-
       for (const player of players) {
         const entry = document.createElement('div');
         entry.className = 'player-entry';
         entry.innerHTML = `
           <div><strong>${player.name || 'Jogador'}</strong></div>
-          <div>ID: ${player.id}</div>
+          <div>Status: ${player.alive === false ? 'Morto' : 'Vivo'}</div>
           <div>Pontos: <span style="color: #ff0;">${player.score || 0}</span></div>
+          <div>Kills: ${player.kills || 0} | Mortes: ${player.deaths || 0}</div>
         `;
         list.appendChild(entry);
       }
@@ -993,11 +1065,7 @@
       entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
       log.appendChild(entry);
       log.scrollTop = log.scrollHeight;
-
-      // Manter últimas 10 mensagens
-      while (log.children.length > 10) {
-        log.removeChild(log.firstChild);
-      }
+      while (log.children.length > 10) log.removeChild(log.firstChild);
     }
 
     function addChatMessage(message) {
@@ -1007,13 +1075,9 @@
       entry.textContent = `${message.playerName || 'Jogador'}: ${message.text}`;
       container.appendChild(entry);
       container.scrollTop = container.scrollHeight;
-
-      while (container.children.length > 10) {
-        container.removeChild(container.firstChild);
-      }
+      while (container.children.length > 10) container.removeChild(container.firstChild);
     }
 
-    // Iniciar ao carregar
     window.addEventListener('load', initGame);
   </script>
 </body>
