@@ -17,6 +17,7 @@ const rooms = new Map();
 const WORLD = { width: 1200, height: 800 };
 const KILL_TARGET = 20;
 const STARTING_ENEMIES = 8;
+const MISSION_TYPES = ["kills", "survive", "crystals"];
 
 function getRoomName(socket) {
   return (socket.handshake.query?.room || "sala1").toString().trim() || "sala1";
@@ -37,14 +38,20 @@ function createObstacles() {
 }
 
 function createRoomState(roomName) {
-  return {
+  const room = {
     name: roomName,
     players: new Map(),
     enemies: [],
     bullets: [],
     obstacles: createObstacles(),
     winner: null,
+    missions: [],
+    crystals: [],
+    missionTimer: 0,
+    totalKills: 0,
   };
+  createMissions(room);
+  return room;
 }
 
 function getRoomState(roomName) {
@@ -83,31 +90,113 @@ function emitRoomState(room) {
     enemies: room.enemies,
     bullets: room.bullets,
     obstacles: room.obstacles,
+    crystals: room.crystals,
+    missions: room.missions,
     winner: room.winner,
   });
 }
 
-function collideWithObstacle(x, y, radius) {
+function isCollidingWithObstacle(x, y, radius) {
   return false;
 }
 
-function resolvePosition(room, player) {
+function resolvePosition(room, player, nextX, nextY) {
   const radius = 10;
-  const nextX = Math.max(radius, Math.min(WORLD.width - radius, player.x));
-  const nextY = Math.max(radius, Math.min(WORLD.height - radius, player.y));
+  const targetX = Math.max(radius, Math.min(WORLD.width - radius, nextX ?? player.x));
+  const targetY = Math.max(radius, Math.min(WORLD.height - radius, nextY ?? player.y));
 
   for (const obstacle of room.obstacles) {
     if (
-      nextX + radius > obstacle.x &&
-      nextX - radius < obstacle.x + obstacle.w &&
-      nextY + radius > obstacle.y &&
-      nextY - radius < obstacle.y + obstacle.h
+      targetX + radius > obstacle.x &&
+      targetX - radius < obstacle.x + obstacle.w &&
+      targetY + radius > obstacle.y &&
+      targetY - radius < obstacle.y + obstacle.h
     ) {
       return { x: player.x, y: player.y };
     }
   }
 
-  return { x: nextX, y: nextY };
+  return { x: targetX, y: targetY };
+}
+
+function createMissions(room) {
+  room.missions = [];
+  room.crystals = [
+    { id: `${room.name}-crystal-1`, x: 260, y: 160, radius: 16, health: 60 },
+    { id: `${room.name}-crystal-2`, x: 900, y: 240, radius: 16, health: 60 },
+    { id: `${room.name}-crystal-3`, x: 640, y: 620, radius: 16, health: 60 },
+  ];
+
+  room.missions.push(
+    {
+      id: `${room.name}-mission-kills`,
+      type: "kills",
+      title: "Elimine inimigos",
+      description: "Mate 8 inimigos",
+      target: 8,
+      progress: 0,
+      reward: 80,
+      completed: false,
+    },
+    {
+      id: `${room.name}-mission-survive`,
+      type: "survive",
+      title: "Sobreviva",
+      description: "Fique vivo por 30 segundos",
+      target: 30,
+      progress: 0,
+      reward: 60,
+      completed: false,
+    },
+    {
+      id: `${room.name}-mission-crystals`,
+      type: "crystals",
+      title: "Quebre cristais",
+      description: "Destrua 3 cristais",
+      target: 3,
+      progress: 0,
+      reward: 100,
+      completed: false,
+    }
+  );
+}
+
+function awardMission(room, mission) {
+  if (!mission || mission.completed) return;
+  mission.completed = true;
+  for (const player of room.players.values()) {
+    if (player.alive) {
+      player.score = (player.score || 0) + mission.reward;
+    }
+  }
+  io.to(room.name).emit("message", { msg: `Missão concluída: ${mission.title} (+${mission.reward} pts)`, timestamp: new Date().toISOString() });
+}
+
+function updateMissions(room) {
+  if (!room.missions.length) {
+    createMissions(room);
+    return;
+  }
+
+  room.missionTimer += 1;
+
+  const killMission = room.missions.find((mission) => mission.type === "kills");
+  if (killMission && !killMission.completed) {
+    killMission.progress = Math.min(killMission.target, room.totalKills || 0);
+    if (killMission.progress >= killMission.target) awardMission(room, killMission);
+  }
+
+  const surviveMission = room.missions.find((mission) => mission.type === "survive");
+  if (surviveMission && !surviveMission.completed) {
+    surviveMission.progress = Math.min(surviveMission.target, Math.floor(room.missionTimer / 30));
+    if (surviveMission.progress >= surviveMission.target) awardMission(room, surviveMission);
+  }
+
+  const crystalMission = room.missions.find((mission) => mission.type === "crystals");
+  if (crystalMission && !crystalMission.completed) {
+    crystalMission.progress = Math.min(crystalMission.target, room.crystals.filter((crystal) => crystal.health <= 0).length);
+    if (crystalMission.progress >= crystalMission.target) awardMission(room, crystalMission);
+  }
 }
 
 function applyDamage(room, player, amount, sourceId) {
@@ -208,7 +297,7 @@ io.on("connection", (socket) => {
       player.angle = data.angle;
       player.score = player.kills || 0;
 
-      const resolved = resolvePosition(room, player);
+      const resolved = resolvePosition(room, player, data.x, data.y);
       player.x = resolved.x;
       player.y = resolved.y;
     }
@@ -270,6 +359,7 @@ setInterval(() => {
     }
 
     spawnEnemies(room);
+    updateMissions(room);
 
     for (const player of room.players.values()) {
       if (!player.alive) {
@@ -289,8 +379,16 @@ setInterval(() => {
 
       if (enemy.x < 10 || enemy.x > WORLD.width - 10) enemy.vx *= -1;
       if (enemy.y < 10 || enemy.y > WORLD.height - 10) enemy.vy *= -1;
-      enemy.x = Math.max(10, Math.min(WORLD.width - 10, enemy.x));
-      enemy.y = Math.max(10, Math.min(WORLD.height - 10, enemy.y));
+
+      const nextX = Math.max(10, Math.min(WORLD.width - 10, enemy.x));
+      const nextY = Math.max(10, Math.min(WORLD.height - 10, enemy.y));
+      if (room.obstacles.some((obstacle) => nextX + enemy.radius > obstacle.x && nextX - enemy.radius < obstacle.x + obstacle.w && nextY + enemy.radius > obstacle.y && nextY - enemy.radius < obstacle.y + obstacle.h)) {
+        enemy.vx *= -1;
+        enemy.vy *= -1;
+      } else {
+        enemy.x = nextX;
+        enemy.y = nextY;
+      }
 
       for (const player of room.players.values()) {
         if (!player.alive) continue;
@@ -314,6 +412,11 @@ setInterval(() => {
         continue;
       }
 
+      if (room.obstacles.some((obstacle) => bullet.x + bullet.radius > obstacle.x && bullet.x - bullet.radius < obstacle.x + obstacle.w && bullet.y + bullet.radius > obstacle.y && bullet.y - bullet.radius < obstacle.y + obstacle.h)) {
+        room.bullets.splice(i, 1);
+        continue;
+      }
+
       for (let j = room.enemies.length - 1; j >= 0; j--) {
         const enemy = room.enemies[j];
         const dx = bullet.x - enemy.x;
@@ -328,6 +431,7 @@ setInterval(() => {
             if (shooter && shooter.alive) {
               shooter.kills = (shooter.kills || 0) + 1;
               shooter.score = shooter.kills;
+              room.totalKills = (room.totalKills || 0) + 1;
               if (shooter.kills >= KILL_TARGET) {
                 room.winner = { id: shooter.id, name: shooter.name, kills: shooter.kills };
                 io.to(room.name).emit("message", { msg: `${shooter.name} venceu matando ${shooter.kills} monstros!`, timestamp: new Date().toISOString() });
@@ -335,6 +439,19 @@ setInterval(() => {
             }
           }
           break;
+        }
+      }
+
+      if (room.bullets[i]) {
+        for (const crystal of room.crystals) {
+          const dx = bullet.x - crystal.x;
+          const dy = bullet.y - crystal.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < bullet.radius + crystal.radius) {
+            crystal.health = Math.max(0, crystal.health - 18);
+            room.bullets.splice(i, 1);
+            break;
+          }
         }
       }
 

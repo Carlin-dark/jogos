@@ -303,6 +303,11 @@
       transition: all 0.2s ease;
     }
 
+    .fullscreen-btn {
+      background: linear-gradient(135deg, #0af, #0077cc) !important;
+      color: #fff !important;
+    }
+
     .server-config button:hover {
       transform: translateY(-1px);
       box-shadow: 0 8px 18px rgba(17, 198, 54, 0.25);
@@ -434,6 +439,7 @@
 
       <button id="connectBtn">Conectar</button>
       <button id="disconnectBtn" style="background: #f00;">Desconectar</button>
+      <button id="fullscreenBtn" class="fullscreen-btn">Tela cheia</button>
 
       <div class="message-log">
         <div id="messageLog"></div>
@@ -481,6 +487,8 @@
       enemies: [],
       bullets: [],
       obstacles: [],
+      crystals: [],
+      missions: [],
       remotePlayers: [],
       winner: null,
       keys: {},
@@ -521,6 +529,7 @@
 
       document.getElementById('connectBtn').addEventListener('click', connectSocket);
       document.getElementById('disconnectBtn').addEventListener('click', disconnectSocket);
+      document.getElementById('fullscreenBtn').addEventListener('click', toggleFullscreen);
       document.getElementById('testEmitBtn').addEventListener('click', testEmit);
       document.getElementById('sendChatBtn').addEventListener('click', sendChatMessage);
       document.getElementById('mobileToggle').addEventListener('change', toggleJoystickVisibility);
@@ -624,6 +633,17 @@
       }
     }
 
+    function toggleFullscreen() {
+      const gameArea = document.querySelector('.game-area');
+      if (!document.fullscreenElement) {
+        if (gameArea?.requestFullscreen) {
+          gameArea.requestFullscreen().catch(() => {});
+        }
+      } else if (document.exitFullscreen) {
+        document.exitFullscreen();
+      }
+    }
+
     function connectSocket() {
       const url = (document.getElementById('serverUrl').value || '').trim() || (window.location.protocol === 'file:' ? 'http://localhost:3000' : window.location.origin);
       config.roomName = (document.getElementById('roomName').value || 'sala1').trim() || 'sala1';
@@ -674,6 +694,8 @@
         config.enemies = data.enemies || [];
         config.bullets = data.bullets || [];
         config.obstacles = data.obstacles || [];
+        config.crystals = data.crystals || [];
+        config.missions = data.missions || [];
         config.winner = data.winner || null;
         config.remotePlayers = config.players.filter((player) => player.id !== config.socket.id);
 
@@ -844,10 +866,29 @@
       config.player.vx *= friction;
       config.player.vy *= friction;
 
-      config.player.x += config.player.vx;
-      config.player.y += config.player.vy;
-      config.player.x = Math.max(config.player.radius, Math.min(config.width - config.player.radius, config.player.x));
-      config.player.y = Math.max(config.player.radius, Math.min(config.height - config.player.radius, config.player.y));
+      const nextX = config.player.x + config.player.vx;
+      const nextY = config.player.y + config.player.vy;
+      const clampedX = Math.max(config.player.radius, Math.min(config.width - config.player.radius, nextX));
+      const clampedY = Math.max(config.player.radius, Math.min(config.height - config.player.radius, nextY));
+      let collidesWithObstacle = false;
+
+      for (const obstacle of config.obstacles) {
+        if (
+          clampedX + config.player.radius > obstacle.x &&
+          clampedX - config.player.radius < obstacle.x + obstacle.w &&
+          clampedY + config.player.radius > obstacle.y &&
+          clampedY - config.player.radius < obstacle.y + obstacle.h
+        ) {
+          collidesWithObstacle = true;
+          break;
+        }
+      }
+
+      if (!collidesWithObstacle) {
+        config.player.x = clampedX;
+        config.player.y = clampedY;
+      }
+
       config.player.angle = Math.atan2(config.mouse.y - config.player.y, config.mouse.x - config.player.x);
 
       if (config.player.dashCooldown > 0) config.player.dashCooldown--;
@@ -894,6 +935,7 @@
       }
 
       drawObstacles();
+      drawCrystals();
       drawBullets();
       drawEnemies();
       drawRemotePlayers();
@@ -997,6 +1039,29 @@
       }
     }
 
+    function drawCrystals() {
+      for (const crystal of config.crystals || []) {
+        const alpha = crystal.health > 0 ? 0.9 : 0.35;
+        config.ctx.save();
+        config.ctx.globalAlpha = alpha;
+        config.ctx.fillStyle = '#7df9ff';
+        config.ctx.beginPath();
+        config.ctx.moveTo(crystal.x, crystal.y - crystal.radius);
+        config.ctx.lineTo(crystal.x + crystal.radius * 0.7, crystal.y - crystal.radius * 0.3);
+        config.ctx.lineTo(crystal.x + crystal.radius, crystal.y);
+        config.ctx.lineTo(crystal.x + crystal.radius * 0.7, crystal.y + crystal.radius * 0.3);
+        config.ctx.lineTo(crystal.x, crystal.y + crystal.radius);
+        config.ctx.lineTo(crystal.x - crystal.radius * 0.7, crystal.y + crystal.radius * 0.3);
+        config.ctx.lineTo(crystal.x - crystal.radius, crystal.y);
+        config.ctx.lineTo(crystal.x - crystal.radius * 0.7, crystal.y - crystal.radius * 0.3);
+        config.ctx.closePath();
+        config.ctx.fill();
+        config.ctx.strokeStyle = '#d8fbff';
+        config.ctx.stroke();
+        config.ctx.restore();
+      }
+    }
+
     function drawHealthBar(x, y, health, maxHealth) {
       const barWidth = 30;
       const barHeight = 4;
@@ -1020,6 +1085,22 @@
       config.ctx.fillText(`Kills: ${config.player.kills}`, 10, 50);
       config.ctx.fillText(`Mortes: ${config.player.deaths}`, 10, 65);
       config.ctx.fillText(`Meta: ${20 - config.player.kills}`, 10, 80);
+
+      if (config.missions && config.missions.length) {
+        config.ctx.fillStyle = 'rgba(6, 18, 28, 0.8)';
+        config.ctx.fillRect(16, 110, 260, 92);
+        config.ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+        config.ctx.strokeRect(16, 110, 260, 92);
+        config.ctx.fillStyle = '#8ef7ff';
+        config.ctx.font = 'bold 12px monospace';
+        config.ctx.fillText('MISSÕES', 28, 128);
+        config.ctx.font = '10px monospace';
+        config.ctx.fillStyle = '#f5f7fb';
+        config.missions.slice(0, 3).forEach((mission, index) => {
+          const y = 144 + index * 14;
+          config.ctx.fillText(`${mission.title}: ${mission.progress}/${mission.target}`, 28, y);
+        });
+      }
 
       if (!config.connected) {
         config.ctx.fillStyle = '#f00';
