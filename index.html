@@ -493,7 +493,7 @@
       roomName: 'sala1',
       playerName: 'Jogador',
       mobileControlsEnabled: false,
-      joystick: { active: false, x: 0, y: 0 },
+      joystick: { active: false, pointerId: null, x: 0, y: 0 },
       effects: { deathFlash: 0, respawnPulse: 0 }
     };
 
@@ -576,31 +576,35 @@
         config.joystick.y = config.joystick.active ? dy / (maxDistance || 1) : 0;
       };
 
-      const resetJoystick = () => {
+      const resetJoystick = (event) => {
+        if (event && event.pointerId != null && config.joystick.pointerId != null && event.pointerId !== config.joystick.pointerId) {
+          return;
+        }
         config.joystick.active = false;
+        config.joystick.pointerId = null;
         config.joystick.x = 0;
         config.joystick.y = 0;
         knob.style.transform = 'translate(0, 0)';
       };
 
       base.addEventListener('pointerdown', (event) => {
-        if (!config.mobileControlsEnabled) return;
+        if (!config.mobileControlsEnabled || config.joystick.active) return;
         event.preventDefault();
-        base.setPointerCapture(event.pointerId);
+        config.joystick.pointerId = event.pointerId;
         config.joystick.active = true;
         updateJoystick(event.clientX, event.clientY);
       });
 
-      base.addEventListener('pointermove', (event) => {
-        if (!config.mobileControlsEnabled || !config.joystick.active) return;
+      window.addEventListener('pointermove', (event) => {
+        if (!config.mobileControlsEnabled || !config.joystick.active || event.pointerId !== config.joystick.pointerId) return;
         event.preventDefault();
         updateJoystick(event.clientX, event.clientY);
       });
 
       base.addEventListener('pointerup', resetJoystick);
       base.addEventListener('pointercancel', resetJoystick);
-      base.addEventListener('pointerleave', resetJoystick);
       window.addEventListener('pointerup', resetJoystick);
+      window.addEventListener('pointercancel', resetJoystick);
     }
 
     function toggleJoystickVisibility() {
@@ -612,6 +616,7 @@
       }
       if (!enabled) {
         config.joystick.active = false;
+        config.joystick.pointerId = null;
         config.joystick.x = 0;
         config.joystick.y = 0;
         const knob = document.getElementById('joystickKnob');
@@ -776,7 +781,7 @@
 
     function handleTouchMove(e) {
       e.preventDefault();
-      const touch = e.touches[0];
+      const touch = e.touches[e.touches.length - 1] || e.touches[0];
       if (touch) {
         const pos = getPointerPosition(touch);
         config.mouse.x = pos.x;
@@ -786,7 +791,7 @@
 
     function handleTouchStart(e) {
       e.preventDefault();
-      const touch = e.touches[0];
+      const touch = e.touches[e.touches.length - 1] || e.touches[0];
       if (touch) {
         const pos = getPointerPosition(touch);
         config.mouse.x = pos.x;
@@ -797,7 +802,17 @@
 
     function handleTouchEnd(e) {
       e.preventDefault();
-      config.mouse.down = false;
+      if (e.touches && e.touches.length > 0) {
+        const touch = e.touches[e.touches.length - 1] || e.touches[0];
+        if (touch) {
+          const pos = getPointerPosition(touch);
+          config.mouse.x = pos.x;
+          config.mouse.y = pos.y;
+        }
+        config.mouse.down = true;
+      } else {
+        config.mouse.down = false;
+      }
     }
 
     function updatePlayer() {
@@ -816,8 +831,8 @@
       if (config.keys['arrowright'] || config.keys['d']) { config.player.vx += config.player.speed; moved = true; }
 
       if (config.mobileControlsEnabled && config.joystick.active) {
-        config.player.vx += config.joystick.x / 100 * config.player.speed;
-        config.player.vy += config.joystick.y / 100 * config.player.speed;
+        config.player.vx += config.joystick.x * config.player.speed;
+        config.player.vy += config.joystick.y * config.player.speed;
         moved = true;
       }
 
