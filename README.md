@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Jogo 2D com Socket.IO
 
 Um jogo 2D em tempo real multiplayer usando Socket.IO, Express e Canvas HTML5.
@@ -231,3 +232,6 @@ MIT
 ---
 
 **Desenvolvido com ❤️ usando Socket.IO, Express e Canvas HTML5**
+=======
+# jogos
+>>>>>>> 74acd8a63018a33852f41a9ae16afc72ab181ab5
