@@ -16,6 +16,10 @@ const io = new Server(server, {
 const players = new Map();
 const enemies = [];
 
+function getRoomName(socket) {
+  return (socket.handshake.query?.room || "sala1").toString().trim() || "sala1";
+}
+
 function generateEnemies() {
   return Array.from({ length: Math.floor(Math.random() * 3) + 1 }, () => ({
     id: Math.random().toString(36).slice(2, 10),
@@ -29,8 +33,13 @@ function generateEnemies() {
   }));
 }
 
-function broadcastPlayers() {
-  io.emit("players", { players: Array.from(players.values()) });
+function broadcastPlayers(roomName) {
+  const roomPlayers = Array.from(players.values()).filter((player) => player.room === roomName);
+  io.to(roomName).emit("players", { players: roomPlayers });
+}
+
+function getPlayerName(socket) {
+  return socket.handshake.query?.name?.toString().trim() || `Jogador-${socket.id.slice(0, 5)}`;
 }
 
 app.use(express.static(path.join(__dirname)));
@@ -44,9 +53,15 @@ app.get("/", (_req, res) => {
 io.on("connection", (socket) => {
   console.log(`Cliente conectado: ${socket.id}`);
 
+  const playerName = getPlayerName(socket);
+  const roomName = getRoomName(socket);
+
+  socket.join(roomName);
+
   players.set(socket.id, {
     id: socket.id,
-    name: `Jogador-${socket.id.slice(0, 5)}`,
+    name: playerName,
+    room: roomName,
     x: Math.random() * 600,
     y: Math.random() * 400,
     angle: 0,
@@ -55,7 +70,25 @@ io.on("connection", (socket) => {
     maxHealth: 100,
   });
 
-  broadcastPlayers();
+  socket.emit("playerAssigned", { id: socket.id, name: playerName, room: roomName });
+  broadcastPlayers(roomName);
+
+  socket.on("joinRoom", (data) => {
+    const nextRoom = (data?.roomName || "sala1").toString().trim() || "sala1";
+    const currentPlayer = players.get(socket.id);
+    if (currentPlayer) {
+      const previousRoom = currentPlayer.room;
+      if (previousRoom && previousRoom !== nextRoom) {
+        socket.leave(previousRoom);
+      }
+      currentPlayer.room = nextRoom;
+      socket.join(nextRoom);
+      socket.emit("playerAssigned", { id: socket.id, name: currentPlayer.name, room: nextRoom });
+      broadcastPlayers(previousRoom);
+      broadcastPlayers(nextRoom);
+      socket.emit("message", { msg: `Você entrou na sala ${nextRoom}`, timestamp: new Date().toISOString() });
+    }
+  });
 
   socket.on("playerMove", (data) => {
     const player = players.get(socket.id);
@@ -64,16 +97,20 @@ io.on("connection", (socket) => {
       player.y = data.y;
       player.angle = data.angle;
       player.score = data.score;
+      broadcastPlayers(player.room);
     }
   });
 
   socket.on("shoot", (data) => {
-    socket.broadcast.emit("playerShoot", {
-      playerId: socket.id,
-      x: data.x,
-      y: data.y,
-      angle: data.angle,
-    });
+    const player = players.get(socket.id);
+    if (player) {
+      socket.to(player.room).emit("playerShoot", {
+        playerId: socket.id,
+        x: data.x,
+        y: data.y,
+        angle: data.angle,
+      });
+    }
   });
 
   socket.on("enemyHit", (data) => {
@@ -94,9 +131,28 @@ io.on("connection", (socket) => {
     });
   });
 
+  socket.on("chatMessage", (data) => {
+    const player = players.get(socket.id);
+    const text = String(data?.text || "").trim();
+    if (!text || !player) return;
+
+    const message = {
+      id: `${socket.id}-${Date.now()}`,
+      playerId: socket.id,
+      playerName: player.name,
+      text,
+      timestamp: new Date().toISOString(),
+    };
+
+    io.to(player.room).emit("chatMessage", message);
+  });
+
   socket.on("disconnect", () => {
+    const player = players.get(socket.id);
     players.delete(socket.id);
-    broadcastPlayers();
+    if (player?.room) {
+      broadcastPlayers(player.room);
+    }
   });
 });
 

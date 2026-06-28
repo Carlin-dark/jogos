@@ -19,10 +19,11 @@
       background: #1a1a1a;
       display: flex;
       justify-content: center;
-      align-items: center;
-      min-height: 100vh;
+      align-items: flex-start;
+      min-height: 100dvh;
       color: #fff;
-      overflow: hidden;
+      overflow: auto;
+      padding: 10px;
     }
 
     .container {
@@ -31,9 +32,9 @@
       flex-wrap: wrap;
       justify-content: center;
       width: 100%;
-      height: 100vh;
+      min-height: 100%;
       padding: 10px;
-      overflow-y: auto;
+      overflow: visible;
     }
 
     .game-area {
@@ -148,6 +149,7 @@
       padding: 15px;
       border-radius: 5px;
       min-width: 250px;
+      width: min(100%, 320px);
       border: 1px solid #333;
     }
 
@@ -234,6 +236,7 @@
       border-radius: 5px;
       border: 1px solid #333;
       min-width: 250px;
+      width: min(100%, 320px);
     }
 
     .server-config input {
@@ -269,7 +272,7 @@
       transform: scale(0.98);
     }
 
-    .message-log {
+    .message-log, .chat-box {
       background: #111;
       padding: 8px;
       margin: 10px 0;
@@ -278,6 +281,23 @@
       overflow-y: auto;
       font-size: 10px;
       color: #666;
+    }
+
+    .chat-input-row {
+      display: flex;
+      gap: 6px;
+      margin-top: 8px;
+    }
+
+    .chat-input-row input {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .chat-input-row button {
+      width: auto;
+      min-width: 74px;
+      margin: 0;
     }
 
     .log-entry {
@@ -357,11 +377,24 @@
       <label style="font-size: 11px; color: #aaa;">URL do Servidor:</label>
       <input type="text" id="serverUrl" value="" />
 
+      <label style="font-size: 11px; color: #aaa; display: block; margin-top: 8px;">Seu nome:</label>
+      <input type="text" id="playerName" value="Jogador" />
+
+      <label style="font-size: 11px; color: #aaa; display: block; margin-top: 8px;">Sala:</label>
+      <input type="text" id="roomName" value="sala1" />
+
       <button id="connectBtn">Conectar</button>
       <button id="disconnectBtn" style="background: #f00;">Desconectar</button>
 
       <div class="message-log">
         <div id="messageLog"></div>
+      </div>
+
+      <label style="font-size: 11px; color: #aaa; display: block; margin-top: 10px;">Chat:</label>
+      <div class="chat-box" id="chatMessages"></div>
+      <div class="chat-input-row">
+        <input type="text" id="chatInput" placeholder="Escreva uma mensagem" />
+        <button id="sendChatBtn" style="background: #0af; color: #000; font-size: 11px;">Enviar</button>
       </div>
 
       <label style="font-size: 11px; color: #aaa; display: block; margin-top: 10px;">Teste Rápido:</label>
@@ -393,13 +426,16 @@
       },
       enemies: [],
       bullets: [],
+      remotePlayers: [],
       keys: {},
       mouse: { x: 300, y: 200, down: false },
       lastFrameTime: 0,
       fps: 0,
       connected: false,
       lastUpdateTime: 0,
-      updateInterval: 50 // ms
+      updateInterval: 50, // ms
+      roomName: 'sala1',
+      playerName: 'Jogador'
     };
 
     // Inicializar Canvas
@@ -430,10 +466,22 @@
       document.getElementById('connectBtn').addEventListener('click', connectSocket);
       document.getElementById('disconnectBtn').addEventListener('click', disconnectSocket);
       document.getElementById('testEmitBtn').addEventListener('click', testEmit);
+      document.getElementById('sendChatBtn').addEventListener('click', sendChatMessage);
+      document.getElementById('chatInput').addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          sendChatMessage();
+        }
+      });
 
       const existingUrl = new URLSearchParams(window.location.search).get('server');
+      const roomParam = new URLSearchParams(window.location.search).get('room');
+      const nameParam = new URLSearchParams(window.location.search).get('name');
       const defaultServerUrl = window.location.protocol === 'file:' ? 'http://localhost:3000' : window.location.origin;
       document.getElementById('serverUrl').value = existingUrl || defaultServerUrl;
+      document.getElementById('playerName').value = nameParam || 'Jogador';
+      document.getElementById('roomName').value = roomParam || 'sala1';
+      config.roomName = roomParam || 'sala1';
+      config.playerName = nameParam || 'Jogador';
 
       gameLoop();
     }
@@ -448,6 +496,8 @@
     // Conectar ao Socket.IO
     function connectSocket() {
       const url = (document.getElementById('serverUrl').value || '').trim() || (window.location.protocol === 'file:' ? 'http://localhost:3000' : window.location.origin);
+      config.roomName = (document.getElementById('roomName').value || 'sala1').trim() || 'sala1';
+      config.playerName = (document.getElementById('playerName').value || '').trim() || `Jogador-${Math.floor(Math.random() * 1000)}`;
 
       if (config.socket) {
         config.socket.disconnect();
@@ -457,6 +507,10 @@
         transports: ['websocket'],
         forceNew: true,
         reconnection: true,
+        query: {
+          room: config.roomName,
+          name: config.playerName
+        },
         reconnectionDelay: 1000,
         reconnectionDelayMax: 5000,
         reconnectionAttempts: 5
@@ -465,7 +519,19 @@
       config.socket.on('connect', () => {
         config.connected = true;
         updateUI();
-        addLog('Conectado ao servidor!', 'success');
+        addLog(`Conectado ao servidor na sala ${config.roomName}!`, 'success');
+        config.socket.emit('joinRoom', { roomName: config.roomName });
+      });
+
+      config.socket.on('playerAssigned', (data) => {
+        config.playerId = data.id;
+        if (data.name) {
+          config.playerName = data.name;
+        }
+        if (data.room) {
+          config.roomName = data.room;
+          document.getElementById('roomName').value = data.room;
+        }
       });
 
       config.socket.on('disconnect', () => {
@@ -486,7 +552,9 @@
 
       // Receber jogadores
       config.socket.on('players', (data) => {
-        updatePlayersList(data.players || []);
+        const players = data.players || [];
+        config.remotePlayers = players.filter((player) => player.id !== config.socket.id);
+        updatePlayersList(players);
       });
 
       // Receber mensagens do servidor
@@ -498,6 +566,10 @@
       config.socket.on('hit', (data) => {
         config.player.score += data.points || 10;
         addLog(`Acertou! +${data.points || 10} pontos`, 'success');
+      });
+
+      config.socket.on('chatMessage', (message) => {
+        addChatMessage(message);
       });
     }
 
@@ -523,6 +595,17 @@
       });
 
       addLog('Mensagem de teste enviada', 'success');
+    }
+
+    function sendChatMessage() {
+      if (!config.socket || !config.connected) return;
+
+      const input = document.getElementById('chatInput');
+      const text = input.value.trim();
+      if (!text) return;
+
+      config.socket.emit('chatMessage', { text });
+      input.value = '';
     }
 
     // Entrada de teclado
@@ -713,6 +796,9 @@
       // Desenhar jogador
       drawPlayer();
 
+      // Desenhar outros jogadores
+      drawRemotePlayers();
+
       // Desenhar balas
       drawBullets();
 
@@ -754,6 +840,35 @@
 
       // Barra de vida
       drawHealthBar(player.x, player.y - player.radius - 15, player.health, player.maxHealth);
+    }
+
+    function drawRemotePlayers() {
+      for (const player of config.remotePlayers) {
+        const x = player.x || 0;
+        const y = player.y || 0;
+        const angle = player.angle || 0;
+
+        config.ctx.fillStyle = '#0af';
+        config.ctx.beginPath();
+        config.ctx.arc(x, y, player.radius || 8, 0, Math.PI * 2);
+        config.ctx.fill();
+
+        const pointerLength = (player.radius || 8) * 2;
+        const pointerX = x + Math.cos(angle) * pointerLength;
+        const pointerY = y + Math.sin(angle) * pointerLength;
+
+        config.ctx.strokeStyle = '#0af';
+        config.ctx.lineWidth = 2;
+        config.ctx.beginPath();
+        config.ctx.moveTo(x, y);
+        config.ctx.lineTo(pointerX, pointerY);
+        config.ctx.stroke();
+
+        config.ctx.fillStyle = '#fff';
+        config.ctx.font = '10px monospace';
+        config.ctx.textAlign = 'center';
+        config.ctx.fillText(player.name || 'Jogador', x, y - 14);
+      }
     }
 
     function drawBullets() {
@@ -850,6 +965,7 @@
       document.getElementById('connStatus').textContent = config.connected ? 'Conectado' : 'Desconectado';
       document.getElementById('connIndicator').className = 'connection-indicator ' + (config.connected ? 'connected' : 'disconnected');
       document.getElementById('playerScore').textContent = config.player.score;
+      document.getElementById('roomName').value = config.roomName;
       document.getElementById('enemyCount').textContent = config.enemies.length;
       document.getElementById('fpsCounter').textContent = config.fps;
     }
@@ -881,6 +997,19 @@
       // Manter últimas 10 mensagens
       while (log.children.length > 10) {
         log.removeChild(log.firstChild);
+      }
+    }
+
+    function addChatMessage(message) {
+      const container = document.getElementById('chatMessages');
+      const entry = document.createElement('div');
+      entry.className = 'log-entry info';
+      entry.textContent = `${message.playerName || 'Jogador'}: ${message.text}`;
+      container.appendChild(entry);
+      container.scrollTop = container.scrollHeight;
+
+      while (container.children.length > 10) {
+        container.removeChild(container.firstChild);
       }
     }
 
